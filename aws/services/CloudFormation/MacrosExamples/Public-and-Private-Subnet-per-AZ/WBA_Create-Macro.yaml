@@ -1,0 +1,329 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Public Subnet per AZ Macro Template
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: WBA Cost Allocation tags
+        Parameters:
+          - OwnerTag
+          - ProjectTag
+          - EnvironmentTag
+      - Label:
+          default: WBA Lineage/Lifecycle tags
+        Parameters:
+          - CreatedByTag
+          - CreatedDateTag
+          - CreatedMethodTag
+      - Label:
+          default: WBA Stewardship tags
+        Parameters:
+          - TeamTag
+          - DeleteAfterTag
+
+Parameters:
+  OwnerTag:
+    Type: String
+    Description: Value for the "Owner" tag of resources created by the stack used to indicate who owns the stack.
+    Default: WBA
+    ConstraintDescription: Must be WBA or the legacy SwarmAnalytics.
+  ProjectTag:
+    Type: String  
+    Description: Value for the "Project" of the resrouces in the stack used to indciate who is charged for the stack or what WBA paid for project or system it is part of.
+    ConstraintDescription: Must be project name searchable in Jira tickets, game studio name, or a WBD department name.
+  EnvironmentTag: 
+    Type: String
+    Description: Value for the "Environment" tag of the resources created by the stack.
+    AllowedValues:
+       - prod
+       - nonprod
+       - prerelease
+       - alpha
+       - beta
+       - dev
+       - test
+       - qa
+       - staging
+    Default: dev
+    ConstraintDescription: The value prod, nonprod, prerelease, alpha, beta, prerelease may be used for game environments we provide to customers. All others are internal to WBA only. 
+  CreatedByTag:
+    Type: String
+    Description: Value for the "created_by" tac of the resources created by the stack.
+    Default: <your_emailname>@<WBD_email_domain>.com
+    ConstraintDescription: Must be a valid WDB email address that matches your Okta credentials.
+  CreatedDateTag:
+    Type: String 
+    Description: Value for the "created_date" tag of resources created by the stack. 
+    AllowedPattern: '(\d{1,2})/(\d{1,2})/(\d{4,4})'
+    ConstraintDescription: Today's date in MM/DD/YYYY format.
+  CreatedMethodTag:
+    Type: String
+    Description: Value for the "created_method" tag of resources created by the stack. 
+    AllowedValues:
+       - console
+       - CloudFormation
+       - Terraform
+       - CLI
+       - API
+    Default: CloudFormation
+  TeamTag:
+    Type: String
+    Description: Value for the "team" tag of resources created by the stack used to identify the WBA/DPT team responsible for managing the resources.
+    AllowedValues: 
+       - DevOps
+       - DE
+       - DBA
+       - Apps
+       - Pricing and Experimentation
+       - Game Data Pros
+       - Exostatic
+       - Keitaro
+  DeleteAfterTag:
+    Type: String 
+    Description: The date for the "delete_after" tag of resources created by the stack used to indicate the intented end-of-life for the stack. 
+    AllowedPattern: '(((\d{1,2})/(\d{1,2})/(\d{4,4}))|indefinite)'
+    Default: 01/01/2000
+    ConstraintDescription: A future date in MM/DD/YYYY format.
+
+Resources:
+    TransformExecutionRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: 2012-10-17
+                Statement:
+                    - Effect: Allow
+                      Principal:
+                        Service: [lambda.amazonaws.com]
+                      Action: ['sts:AssumeRole']
+            Path: /
+            Policies:
+                - PolicyName: root
+                  PolicyDocument:
+                    Version: 2012-10-17
+                    Statement:
+                        - Effect: Allow
+                          Action: ['logs:*']
+                          Resource: 'arn:aws:logs:*:*:*'
+                        - Effect: Allow
+                          Action: ['ec2:*']
+                          Resource: '*'
+            Tags:
+                - Key: Name
+                  Value: 'Public_Subnet_per_AZ_Macro_Role'
+                - Key: Owner
+                  Value: !Ref OwnerTag
+                - Key: Project
+                  Value: !Ref ProjectTag
+                - Key: Environment
+                  Value: !Ref EnvironmentTag
+                - Key: created_by
+                  Value: !Ref CreatedByTag
+                - Key: create_date
+                  Value: !Ref CreatedDateTag
+                - Key: delete_after
+                  Value: !Ref DeleteAfterTag
+                - Key: created_method
+                  Value: !Ref CreatedMethodTag
+                - Key: team
+                  Value: !Ref TeamTag
+
+    TransformFunctionPermissions:
+        Type: AWS::Lambda::Permission
+        Properties:
+            Action: 'lambda:InvokeFunction'
+            FunctionName: !GetAtt TransformFunction.Arn
+            Principal: 'cloudformation.amazonaws.com'
+
+    TransformFunction:
+        Type: AWS::Lambda::Function
+        Properties:
+            Code:
+                ZipFile: |
+                  import boto3
+                  import copy
+                  import logging
+                  logger = logging.getLogger()
+                  logger.setLevel(logging.INFO)
+
+                  def handler(event, context):
+
+                    # Inputs
+                    logger.info('Input Event: event{}'.format(event))
+                    logger.info('Input Context: event{}'.format(context))
+                    
+                    # Globals
+                    region = event['region']
+                    accountId = event['accountId']
+                    fragment = event['fragment']
+                    transformId = event['transformId']
+                    params = event['params']
+                    requestId = event['requestId']
+                    templateParameterValues = event['templateParameterValues']
+
+                    ec2 = boto3.client('ec2', region_name=region)
+
+                    # Retrieves availability zones for this region
+                    response = ec2.describe_availability_zones()
+                    AZs = response['AvailabilityZones']
+
+                    # Override the number of AZs in the region if an explicit max number of AZ was requested. 
+                    # logger.info('MaxAZs event{}'.format(fragment['Parameters']['MaxAZs']))
+                    # maxAZstring = str(fragment['Parameters']['MaxAZs'])
+                    logger.info('MaxAZ event{}'.format(templateParameterValues['MaxAZs']))
+                    maxAZstring = templateParameterValues['MaxAZs']
+                    maxAZs = int(maxAZstring)
+                    if maxAZs > 0:
+                      numAZs = maxAZs
+                    else:
+                      numAZs = len(AZs)
+
+                    #Grab resources that need to be duplicated
+                    VPCPubSn1 = fragment['Resources']['VPCPubSn1']
+                    VPCPrivSn1 = fragment['Resources']['VPCPrivSn1']
+                    PubSnRtAssoc1 = fragment['Resources']['VPCPubSn1RtAssoc']
+                    PubSnRtAssoc1 = fragment['Resources']['VPCPrivSn1RtAssoc']
+                    StackVPCPubSn1 = fragment['Outputs']['StackVPCPubSn1']
+                    StackVPCPrivSn1 = fragment['Outputs']['StackVPCPrivSn1']
+
+                    # Compute the number of subnet CIDR blocks and the number CIDR bits need via the formula (32-CIDRsize) - numAZs
+                    subnetCIDRs = numAZs * 2
+                    vpcCIDRbits = fragment['Resources']['VPC']['Properties']['CidrBlock'].split("/")
+                    subnetCIDRbits = (32 - int(vpcCIDRbits[1]) - numAZs
+
+                    #iterate and add new resources
+                    for i in range(1,numAZs+1): # Create a range from 1 - numAZs
+
+                      # Override the CIDR for the Public Subnet in the first AZ.
+                      if i == 1:   
+                        fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0] = i - 1
+                        logger.info('CIDR index event{}'.format(fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0]))
+                        logger.info('before CIDR event{}'.format(fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select']['Fn:Cidr']))
+                        fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select']['Fn:Cidr'][1] = subnetCIDRs
+                        fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select']['Fn:Cidr'][2] = subnetCIDRbits
+                        logger.info('after CIDR event{}'.format(fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select']['Fn:Cidr']))
+                        fragment['Resources']['VPCPubSn' + str(i)]['Properties']['AvailabilityZone']['Fn::Select'][0] = str(i - 1)
+                        logger.info('AZ event{}'.format(fragment['Resources']['VPCPubSn' + str(i)]['Properties']['AvailabilityZone']['Fn::Select'][0]))
+                      # Append all the additional Public Subnets onto the fragment.
+                      else:        
+                        # Create new Public Subnet based off of VPCPubSN1
+                        fragment['Resources']['VPCPubSn' + str(i)] = copy.deepcopy(VPCPubSn1)
+                        fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0] = i - 1
+                        fragment['Resources']['VPCPubSn' + str(i)]['Properties']['AvailabilityZone']['Fn::Select'][0] = str(i - 1)
+                        logger.info('CIDR event{}'.format(fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0]))
+                        logger.info('AZ event{}'.format(fragment['Resources']['VPCPubSn' + str(i)]['Properties']['AvailabilityZone']['Fn::Select'][0]))
+                        # Name tag
+                        logger.info('Tags event{}'.format(fragment['Resources']['VPCPubSn1']['Properties']['Tags']))
+                        logger.info('Tags_sub_0 event{}'.format(fragment['Resources']['VPCPubSn1']['Properties']['Tags'][0]))
+                        logger.info('Tags_sub_0_value event{}'.format(fragment['Resources']['VPCPubSn1']['Properties']['Tags'][0]['Value']))
+                        next_name = '${VPCName}_vpc_public_subnet_' + str(i)
+                        logger.info('New_value event{}'.format(next_name))
+                        fragment['Resources']['VPCPubSn' + str(i)]['Properties']['Tags'][0]['Value']['Fn::Sub'] = next_name
+
+                      # Override the CIDR for the public subnet in the first AZ.
+                      if i == 1:   
+                        fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0] = i - 1
+                        logger.info('CIDR index event{}'.format(fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0]))
+                        logger.info('before CIDR event{}'.format(fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select']['Fn:Cidr']))
+                        fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select']['Fn:Cidr'][1] = subnetCIDRs
+                        fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select']['Fn:Cidr'][2] = subnetCIDRbits
+                        logger.info('after CIDR event{}'.format(fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select']['Fn:Cidr']))
+                        fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['AvailabilityZone']['Fn::Select'][0] = str(i - 1)
+                        logger.info('AZ event{}'.format(fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['AvailabilityZone']['Fn::Select'][0]))
+                      # Append all the additional Private Subnets onto the fragment.
+                      else:        
+                        # Create new Private Subnet based off of VPCPrivSN1
+                        fragment['Resources']['VPCPrivSn' + str(i)] = copy.deepcopy(VPCPrivSn1)
+                        # Hard coding the VPC CIDR subnet split where private subnets start and work down from to 12 until intrinsic functions can nest 4 deep see the CF Template WBA_Create-Macro.yaml for details.
+                        # fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0] = len(AZs) + i - 1
+                        # fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0] = 12 - i
+                        fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0] = (numAZs*2) - i
+                        fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['AvailabilityZone']['Fn::Select'][0] = str(i - 1)
+                        # Name tag
+                        logger.info('Tags event{}'.format(fragment['Resources']['VPCPrivSn1']['Properties']['Tags']))
+                        logger.info('Tags_sub_0 event{}'.format(fragment['Resources']['VPCPrivSn1']['Properties']['Tags'][0]))
+                        logger.info('Tags_sub_0_value event{}'.format(fragment['Resources']['VPCPrivSn1']['Properties']['Tags'][0]['Value']))
+                        fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['Tags'][0]['Value']['Fn::Sub'] = '${VPCName}_vpc_private_subnet_' + str(i)
+
+                        # Create Public RT Association
+                        fragment['Resources']['VPCPubSn' + str(i) + 'RtAssoc'] = {}
+                        fragment['Resources']['VPCPubSn' + str(i) + 'RtAssoc']['Type'] = 'AWS::EC2::SubnetRouteTableAssociation'
+                        fragment['Resources']['VPCPubSn' + str(i) + 'RtAssoc']['Properties'] = {}
+                        fragment['Resources']['VPCPubSn' + str(i) + 'RtAssoc']['Properties']['RouteTableId'] = {}
+                        fragment['Resources']['VPCPubSn' + str(i) + 'RtAssoc']['Properties']['RouteTableId']['Ref'] = 'VPCPubRt1'
+                        fragment['Resources']['VPCPubSn' + str(i) + 'RtAssoc']['Properties']['SubnetId'] = {}
+                        fragment['Resources']['VPCPubSn' + str(i) + 'RtAssoc']['Properties']['SubnetId']['Ref'] = 'VPCPubSn' + str(i)
+
+                        # Create Private RT Association
+                        fragment['Resources']['VPCPrivSn' + str(i) + 'RtAssoc'] = {}
+                        fragment['Resources']['VPCPrivSn' + str(i) + 'RtAssoc']['Type'] = 'AWS::EC2::SubnetRouteTableAssociation'
+                        fragment['Resources']['VPCPrivSn' + str(i) + 'RtAssoc']['Properties'] = {}
+                        fragment['Resources']['VPCPrivSn' + str(i) + 'RtAssoc']['Properties']['RouteTableId'] = {}
+                        fragment['Resources']['VPCPrivSn' + str(i) + 'RtAssoc']['Properties']['RouteTableId']['Ref'] = 'VPCPrivRt1'
+                        fragment['Resources']['VPCPrivSn' + str(i) + 'RtAssoc']['Properties']['SubnetId'] = {}
+                        fragment['Resources']['VPCPrivSn' + str(i) + 'RtAssoc']['Properties']['SubnetId']['Ref'] = 'VPCPrivSn' + str(i)
+                        
+                        # NAT Gateway per public subnet
+                        
+                        # NAT Gateway EIP per NAT Gateway
+
+                        # Create new Outputs for public subnets
+                        logger.info('Outputs event{}'.format(fragment['Outputs']))
+                        fragment['Outputs']['StackVPCPubSn' + str(i)] = copy.deepcopy(StackVPCPubSn1)
+                        logger.info('Outputs event{}'.format(fragment['Outputs']))
+                        fragment['Outputs']['StackVPCPubSn' + str(i)]['Description'] = 'The ID of the public subnet' + str(i)
+                        logger.info('Outputs event{}'.format(fragment['Outputs']['StackVPCPubSn' + str(i)]['Description']))
+                        fragment['Outputs']['StackVPCPubSn' + str(i)]['Value']['Ref'] = 'VPCPubSn' + str(i)
+                        logger.info('Outputs event{}'.format(fragment['Outputs']['StackVPCPubSn' + str(i)]['Value']))
+                        fragment['Outputs']['StackVPCPubSn' + str(i)]['Export']['Name']['Fn::Sub'] = '${VPCName}-PublicSubnet' + str(i) + '-ID'
+                        logger.info('Outputs event{}'.format(fragment['Outputs']['StackVPCPubSn' + str(i)]['Export']['Name']))
+
+                        # Create new Outputs for private subnets
+                        logger.info('Outputs event{}'.format(fragment['Outputs']))
+                        fragment['Outputs']['StackVPCPrivSn' + str(i)] = copy.deepcopy(StackVPCPrivSn1)
+                        logger.info('Outputs event{}'.format(fragment['Outputs']))
+                        fragment['Outputs']['StackVPCPrivSn' + str(i)]['Description'] = 'The ID of the private subnet' + str(i)
+                        logger.info('Outputs event{}'.format(fragment['Outputs']['StackVPCPrivSn' + str(i)]['Description']))
+                        fragment['Outputs']['StackVPCPrivSn' + str(i)]['Value']['Ref'] = 'VPCPrivSn' + str(i)
+                        logger.info('Outputs event{}'.format(fragment['Outputs']['StackVPCPrivSn' + str(i)]['Value']))
+                        fragment['Outputs']['StackVPCPrivSn' + str(i)]['Export']['Name']['Fn::Sub'] = '${VPCName}-PrivateSubnet' + str(i) + '-ID'
+                        logger.info('Outputs event{}'.format(fragment['Outputs']['StackVPCPrivSn' + str(i)]['Export']['Name']))
+
+                    r = {}
+                    r['requestId'] = requestId
+                    r['status'] = 'SUCCESS'
+                    r['fragment'] = fragment
+
+                    return r
+
+            Handler: index.handler
+            Runtime: python3.9
+            Timeout: '60'
+            Role: !GetAtt TransformExecutionRole.Arn
+            Tags:
+                - Key: Name
+                  Value: 'Public_Subnet_per_AZ_Macro_Lambda_Function'
+                - Key: Owner
+                  Value: !Ref OwnerTag
+                - Key: Project
+                  Value: !Ref ProjectTag
+                - Key: Environment
+                  Value: !Ref EnvironmentTag
+                - Key: created_by
+                  Value: !Ref CreatedByTag
+                - Key: create_date
+                  Value: !Ref CreatedDateTag
+                - Key: delete_after
+                  Value: !Ref DeleteAfterTag
+                - Key: created_method
+                  Value: !Ref CreatedMethodTag
+                - Key: team
+                  Value: !Ref TeamTag
+
+    Transform:
+        Type: AWS::CloudFormation::Macro
+        Properties:
+            Name: CreateSubnetsPerAZ
+            Description: Macro to create Subnets for every available AZ
+            FunctionName: !GetAtt TransformFunction.Arn

@@ -1,0 +1,459 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: VPC Properties
+        Parameters:
+          - VPCName
+          - VPCCidrBlock
+          - MaxAZs
+          - CorpAllocatedCIDR
+      - Label:
+          default: WBA Cost Allocation tags
+        Parameters:
+          - OwnerTag
+          - ProjectTag
+          - EnvironmentTag
+      - Label:
+          default: WBA Lineage/Lifecycle tags
+        Parameters:
+          - CreatedByTag
+          - CreatedDateTag
+          - CreatedMethodTag
+      - Label:
+          default: WBA Stewardship tags
+        Parameters:
+          - TeamTag
+          - DeleteAfterTag
+
+Parameters:
+  VPCName:
+    Type: String
+    Description: Name for the VPC used to indicate what app, system, or other purpose the VPC is used for. "-vpc" will be appended to this name.
+    Default: Creator_was_too_lazy_to_provide_a_name
+  VPCCidrBlock:
+    Type: String
+    Description: 'The CIDR block for the VPC in the range /27 - /16 to allow for 1 private and 1 public subnets per AZ (Max AZ/region is currently 6 in us-east-1). (Format Example: 10.0.0.0/16) Subnet CIDRs will be 4 bits smaller than the VPC CIDR.'
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 10.0.0.0/16
+    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(27|26|25|24|23|22|21|20|19|18|17|16)\b'
+    ConstraintDescription: Must be a valid IP CIDR block in the range /27 - /16 to allow for 2 subnets per AZ (Max AZ/region is 8). 
+  MaxAZs:
+    Type: String
+#    Type: Number
+    Description: The maximum number of AZ subnets need to be deployed in otherwise 0 means all AZs in the region.
+    MinLength: '1'
+    MaxLength: '1'
+#    MinValue: '0'
+#    MaxValue: '8'
+    Default: '0'
+    AllowedPattern: '[0-8]'
+    ConstraintDescription: Must be an integer value between 0-8 inclusive where 0 means all the AZs in the region. 
+  CorpAllocatedCIDR:
+    Type: String
+    Description: Whether the VPCCidrBlock a corporate allocated private IPv4 address block. Corporate allocation gurantees peerability due to no overlap across the company.
+    AllowedValues:
+      - true
+      - false
+    Default: false    
+  OwnerTag:
+    Type: String
+    Description: Value for the "Owner" tag of resources created by the stack used to indicate who owns the stack.
+    Default: WBA
+    ConstraintDescription: Must be WBA or the legacy SwarmAnalytics.
+  ProjectTag:
+    Type: String  
+    Description: Value for the "Project" of the resrouces in the stack used to indciate who is charged for the stack or what WBA paid for project or system it is part of.
+    ConstraintDescription: Must be project name searchable in Jira tickets, game studio name, or a WBD department name.
+  EnvironmentTag: 
+    Type: String
+    Description: Value for the "Environment" tag of the resources created by the stack.
+    AllowedValues:
+       - prod
+       - nonprod
+       - prerelease
+       - alpha
+       - beta
+       - dev
+       - test
+       - qa
+       - staging
+    Default: dev
+    ConstraintDescription: The value prod, nonprod, prerelease, alpha, beta, prerelease may be used for game environments we provide to customers. All others are internal to WBA only. 
+  CreatedByTag:
+    Type: String
+    Description: Value for the "created_by" tac of the resources created by the stack.
+    Default: <your_emailname>@<WBD_email_domain>.com
+    ConstraintDescription: Must be a valid WDB email address that matches your Okta credentials.
+  CreatedDateTag:
+    Type: String 
+    Description: Value for the "created_date" tag of resources created by the stack. 
+    AllowedPattern: '(\d{1,2})/(\d{1,2})/(\d{4,4})'
+    ConstraintDescription: Today's date in MM/DD/YYYY format.
+  CreatedMethodTag:
+    Type: String
+    Description: Value for the "created_method" tag of resources created by the stack. 
+    AllowedValues:
+       - console
+       - CloudFormation
+       - Terraform
+       - CLI
+       - API
+    Default: CloudFormation
+  TeamTag:
+    Type: String
+    Description: Value for the "team" tag of resources created by the stack used to identify the WBA/DPT team responsible for managing the resources.
+    AllowedValues: 
+       - DevOps
+       - DE
+       - DBA
+       - Apps
+       - Pricing and Experimentation
+       - Game Data Pros
+       - Exostatic
+       - Keitaro
+  DeleteAfterTag:
+    Type: String 
+    Description: The date for the "delete_after" tag of resources created by the stack used to indicate the intented end-of-life for the stack. The default is an invalid value forcing you to pick a date.  For long lived resources something like a year or 2 year in the future is a recommended. 
+    AllowedPattern: '(((\d{1,2})/(\d{1,2})/(\d{4,4}))|indefinite)'
+    Default: 01/01/2000
+    ConstraintDescription: A future date in MM/DD/YYYY format.
+
+Resources:
+
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: !Ref VPCCidrBlock
+      InstanceTenancy: default
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${VPCName}_vpc'
+        - Key: corp_allocated_cidr
+          Value: !Ref CorpAllocatedCIDR
+        - Key: Owner
+          Value: !Ref OwnerTag
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Environment
+          Value: !Ref EnvironmentTag
+        - Key: created_by
+          Value: !Ref CreatedByTag
+        - Key: create_date
+          Value: !Ref CreatedDateTag
+        - Key: delete_after
+          Value: !Ref DeleteAfterTag
+        - Key: created_method
+          Value: !Ref CreatedMethodTag
+        - Key: team
+          Value: !Ref TeamTag
+        - Key: corp_allocated_cidr
+          Value: !Ref CorpAllocatedCIDR
+
+  VPCPubSn1:
+    Type: 'AWS::EC2::Subnet'
+    DependsOn: VPC
+    Properties:
+# As or 12/2022 the region with the most AZ (6) is us-east-1 resulting in an offset of 12.  There are only a couple of other regions with 4 AZs (us-west-2 and ap-northeast-1) and all the rest have 3 AZs. 
+#      CidrBlock: !Select [0, !Cidr [!GetAtt 'VPC.CidrBlock', 256, 8]]
+#      CidrBlock: !Select [0, !Cidr [!GetAtt 'VPC.CidrBlock', 12, 8]]
+#      !If [!Equals [!Ref MaxAZs, '0'], 12, !Ref MaxAZs]
+#      CidrBlock: !Select [0, !Cidr [!GetAtt 'VPC.CidrBlock', 4, 4]]
+      # Reusing the VPC CIDR here looks wrong, but CF transform named CreateSubnetsPerAZ will override with the correct CIDR after it calculates it. 
+      CidrBlock: !Ref VPCCidrBlock
+      AvailabilityZone: !Select
+        - '0'
+        - !GetAZs
+          Ref: 'AWS::Region'
+      VpcId: !Ref VPC
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${VPCName}_vpc_public_subnet_1'
+        - Key: Owner
+          Value: !Ref OwnerTag
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Environment
+          Value: !Ref EnvironmentTag
+        - Key: created_by
+          Value: !Ref CreatedByTag
+        - Key: create_date
+          Value: !Ref CreatedDateTag
+        - Key: delete_after
+          Value: !Ref DeleteAfterTag
+        - Key: created_method
+          Value: !Ref CreatedMethodTag
+        - Key: team
+          Value: !Ref TeamTag
+        - Key: corp_allocated_cidr
+          Value: !Ref CorpAllocatedCIDR
+
+  VPCPrivSn1:
+    DependsOn: VPC
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+# Until a Select-Length-GetAZs-Ref can nest we need to hard code the offset of the 2 times the greatest number of AZ so public and private subnets don't collide in the VPC's CIDR split. 
+# As or 12/2022 the region with the most AZ (6) is us-east-1 resulting in an offset of 12.  There are only a couple of other regions with 4 AZs (us-west-2 and ap-northeast-1) and all the rest have 3 AZs. 
+#      CidrBlock: !Select [11, !Cidr [!GetAtt 'VPC.CidrBlock', 16, 8]]
+#      CidrBlock: !Select [6, !Cidr [!GetAtt 'VPC.CidrBlock', 256, 8]]
+#      CidrBlock: !Select 
+#        - Fn::Length: 
+#            - !GetAZs 
+#              Ref: 'AWS::Region'
+#        - Fn::Cidr [!GetAtt 'VPC.CidrBlock', 256, 8]
+#      CidrBlock: !Select 
+#        - 6
+#        - Fn::Length [!GetAZs !Ref 'AWS::Region']
+#        - !Cidr [!GetAtt 'VPC.CidrBlock', 256, 8]
+#      CidrBlock: !Select [!Length [!GetAZs [!Ref 'AWS::Region']], !Cidr [!GetAtt 'VPC.CidrBlock', 256, 8]]
+#      CidrBlock: !Select [3, !Cidr [!GetAtt 'VPC.CidrBlock', 4, 4]]
+      # Reusing the VPC CIDR here looks wrong, but CF transform named CreateSubnetsPerAZ will override with the correct CIDR after it calculates it. 
+      CidrBlock: !Ref VPCCidrBlock
+      AvailabilityZone: !Select
+        - '0'
+        - !GetAZs
+          Ref: 'AWS::Region'
+      VpcId: !Ref VPC
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${VPCName}_vpc_private_subnet_1'
+        - Key: Owner
+          Value: !Ref OwnerTag
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Environment
+          Value: !Ref EnvironmentTag
+        - Key: created_by
+          Value: !Ref CreatedByTag
+        - Key: create_date
+          Value: !Ref CreatedDateTag
+        - Key: delete_after
+          Value: !Ref DeleteAfterTag
+        - Key: created_method
+          Value: !Ref CreatedMethodTag
+        - Key: team
+          Value: !Ref TeamTag
+        - Key: corp_allocated_cidr
+          Value: !Ref CorpAllocatedCIDR
+
+  VPCPubRt1:
+    DependsOn: VPC
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${VPCName}_vpc_public_route_table_1'
+        - Key: Owner
+          Value: !Ref OwnerTag
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Environment
+          Value: !Ref EnvironmentTag
+        - Key: created_by
+          Value: !Ref CreatedByTag
+        - Key: create_date
+          Value: !Ref CreatedDateTag
+        - Key: delete_after
+          Value: !Ref DeleteAfterTag
+        - Key: created_method
+          Value: !Ref CreatedMethodTag
+        - Key: team
+          Value: !Ref TeamTag
+  VPCPubSn1RtAssoc:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref VPCPubRt1
+      SubnetId: !Ref VPCPubSn1
+
+  VPCPrivRt1:
+    DependsOn: VPC
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${VPCName}_vpc_private_route_table_1'
+        - Key: Owner
+          Value: !Ref OwnerTag
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Environment
+          Value: !Ref EnvironmentTag
+        - Key: created_by
+          Value: !Ref CreatedByTag
+        - Key: create_date
+          Value: !Ref CreatedDateTag
+        - Key: delete_after
+          Value: !Ref DeleteAfterTag
+        - Key: created_method
+          Value: !Ref CreatedMethodTag
+        - Key: team
+          Value: !Ref TeamTag
+  VPCPrivSn1RtAssoc:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref VPCPrivRt1
+      SubnetId: !Ref VPCPrivSn1
+
+  VPCPubDefaultRoute:
+    Type: 'AWS::EC2::Route'
+#    DependsOn: VPCIGW
+    DependsOn: VPCIGWAttachment
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      RouteTableId: !Ref VPCPubRt1
+      GatewayId: !Ref VPCIGW
+  VPCPrivDefaultRoute:
+    DependsOn: NATGateway1
+    Type: 'AWS::EC2::Route'
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      RouteTableId: !Ref VPCPrivRt1
+      NatGatewayId: !Ref NATGateway1
+#      InstanceId: !Ref VPCNatInstance
+
+  VPCIGW:
+    DependsOn: VPC
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${VPCName}_vpc_igw'
+        - Key: Owner
+          Value: !Ref OwnerTag
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Environment
+          Value: !Ref EnvironmentTag
+        - Key: created_by
+          Value: !Ref CreatedByTag
+        - Key: create_date
+          Value: !Ref CreatedDateTag
+        - Key: delete_after
+          Value: !Ref DeleteAfterTag
+        - Key: created_method
+          Value: !Ref CreatedMethodTag
+        - Key: team
+          Value: !Ref TeamTag
+  VPCIGWAttachment:
+    DependsOn: VPCIGW
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref VPCIGW
+
+  SGAllTrafficFromVPC:
+    DependsOn: VPC
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupName: all_traffic_from_vpc_sg
+      GroupDescription: VPN Traffic from VPC CIDR
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: '-1'
+          CidrIp: !Ref VPCCidrBlock
+          Description: All Traffic from VPC CIDR
+      Tags:
+        - Key: Name
+          Value: !Sub '${VPCName}_vpc_sg_1'
+        - Key: Owner
+          Value: !Ref OwnerTag
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Environment
+          Value: !Ref EnvironmentTag
+        - Key: created_by
+          Value: !Ref CreatedByTag
+        - Key: create_date
+          Value: !Ref CreatedDateTag
+        - Key: delete_after
+          Value: !Ref DeleteAfterTag
+        - Key: created_method
+          Value: !Ref CreatedMethodTag
+        - Key: team
+          Value: !Ref TeamTag
+
+  NATGateway1:
+   DependsOn: VPCPubSn1
+   Type: AWS::EC2::NatGateway
+   Properties:
+      AllocationId: !GetAtt NATGatewayEIP1.AllocationId
+      SubnetId: !Ref VPCPubSn1
+      Tags:
+        - Key: Name
+          Value: !Sub '${VPCName}_vpc_public_subnet_1_ngw'
+        - Key: Owner
+          Value: !Ref OwnerTag
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Environment
+          Value: !Ref EnvironmentTag
+        - Key: created_by
+          Value: !Ref CreatedByTag
+        - Key: create_date
+          Value: !Ref CreatedDateTag
+        - Key: delete_after
+          Value: !Ref DeleteAfterTag
+        - Key: created_method
+          Value: !Ref CreatedMethodTag
+        - Key: team
+          Value: !Ref TeamTag
+  NATGatewayEIP1:
+   Type: AWS::EC2::EIP
+   Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${VPCName}_vpc_public_subnet_1_ngw_eip'
+        - Key: Owner
+          Value: !Ref OwnerTag
+        - Key: Project
+          Value: !Ref ProjectTag
+        - Key: Environment
+          Value: !Ref EnvironmentTag
+        - Key: created_by
+          Value: !Ref CreatedByTag
+        - Key: create_date
+          Value: !Ref CreatedDateTag
+        - Key: delete_after
+          Value: !Ref DeleteAfterTag
+        - Key: created_method
+          Value: !Ref CreatedMethodTag
+        - Key: team
+          Value: !Ref TeamTag
+
+Transform:
+# AWS::LanguageExtensions is only needed for the Length function.
+#  - 'AWS::LanguageExtensions'
+  - CreateSubnetsPerAZ
+  
+Outputs:
+  StackVPC:
+    Description: The ID of the VPC
+    Value: !Ref VPC
+    Export:
+      Name: !Sub "${VPCName}-VPC-ID"
+  StackVPCPubSn1:
+    Description: The ID of the public subnet1
+    Value: !Ref VPCPubSn1
+    Export:
+      Name: !Sub "${VPCName}-PublicSubnet1-ID"
+  StackVPCPrivSn1:
+    Description: The ID of the private subnet1
+    Value: !Ref VPCPrivSn1
+    Export:
+      Name: !Sub "${VPCName}-PrivateSubnet1-ID"
+  StackSGAllTrafficFromVPC:
+    Description: The ID of the Security Group that allows instance in the VPC to talk to each other
+    Value: !Ref SGAllTrafficFromVPC
+    Export:
+      Name: !Sub "${VPCName}-SGAllTraffic-ID"
+
