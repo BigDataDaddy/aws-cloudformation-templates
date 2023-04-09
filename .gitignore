@@ -1,3 +1,8 @@
 .DS_Store
 .idea/
 .vscode/
+aws/services/CloudFormation/MacrosExamples/Public-and-Private-Subnet-per-AZ/minimal-include-frag.yaml
+aws/services/CloudFormation/MacrosExamples/Public-and-Private-Subnet-per-AZ/minimal-include-frag.yaml.txt
+aws/services/CloudFormation/MacrosExamples/Public-and-Private-Subnet-per-AZ/test-include-frag.yaml
+aws/services/CloudFormation/MacrosExamples/Boto3/CF_Boto3_macro_packaged.template
+aws/services/CloudFormation/MacrosExamples/Public-and-Private-Subnet-per-AZ/output.template

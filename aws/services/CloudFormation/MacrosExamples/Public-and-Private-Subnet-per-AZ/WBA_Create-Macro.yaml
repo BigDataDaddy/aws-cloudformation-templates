@@ -143,13 +143,15 @@ Resources:
                 ZipFile: |
                   import boto3
                   import copy
-                  import logging
+                  import math
+                  import logging  
                   logger = logging.getLogger()
                   logger.setLevel(logging.INFO)
+                  # logger.setLevel(logging.DEBUG)
 
                   def handler(event, context):
 
-                    # Inputs
+                    # Function Inputs
                     logger.info('Input Event: event{}'.format(event))
                     logger.info('Input Context: event{}'.format(context))
                     
@@ -161,6 +163,7 @@ Resources:
                     params = event['params']
                     requestId = event['requestId']
                     templateParameterValues = event['templateParameterValues']
+                    logger.info('Parameters event{}'.format(templateParameterValues))
 
                     ec2 = boto3.client('ec2', region_name=region)
 
@@ -169,9 +172,7 @@ Resources:
                     AZs = response['AvailabilityZones']
 
                     # Override the number of AZs in the region if an explicit max number of AZ was requested. 
-                    # logger.info('MaxAZs event{}'.format(fragment['Parameters']['MaxAZs']))
-                    # maxAZstring = str(fragment['Parameters']['MaxAZs'])
-                    logger.info('MaxAZ event{}'.format(templateParameterValues['MaxAZs']))
+                    logger.info('MaxAZs: {}'.format(templateParameterValues['MaxAZs']))
                     maxAZstring = templateParameterValues['MaxAZs']
                     maxAZs = int(maxAZstring)
                     if maxAZs > 0:
@@ -187,66 +188,73 @@ Resources:
                     StackVPCPubSn1 = fragment['Outputs']['StackVPCPubSn1']
                     StackVPCPrivSn1 = fragment['Outputs']['StackVPCPrivSn1']
 
-                    # Compute the number of subnet CIDR blocks and the number CIDR bits need via the formula (32-CIDRsize) - numAZs
+                    # Compute the number of subnet CIDR blocks and the number CIDR bits need.
+                    # The formula for the next highest power of 2 is 2**(math.ceil(math.log2(n))).
+                    # Removing the power of 2 gives the number of bits needed or (math.ceil(math.log2(n))).
+                    # So the biggest subnets are VPC CIDR bits - the number of bits in the next highest power of 2
+                    # relative to the number for subnets or n in the formula.
+                    logger.info('VPCNetMaskLength: {}'.format(templateParameterValues['VPCNetMaskLength']))
+                    vpcCIDRbits = templateParameterValues['VPCNetMaskLength']
+                    logger.info('vpcCIDRbits: %d', int(vpcCIDRbits) )
                     subnetCIDRs = numAZs * 2
-                    vpcCIDRbits = fragment['Resources']['VPC']['Properties']['CidrBlock'].split("/")
-                    subnetCIDRbits = (32 - int(vpcCIDRbits[1]) - numAZs
+                    logger.info('subnetCIDRs: %d', subnetCIDRs )
+                    subnetCIDRbits = ( (32 - int(vpcCIDRbits)) - (math.ceil(math.log2(subnetCIDRs))) )
+                    logger.info('subnetCIDRbits: %d', subnetCIDRbits )
 
-                    #iterate and add new resources
+                    # iterate and add new resources
                     for i in range(1,numAZs+1): # Create a range from 1 - numAZs
 
-                      # Override the CIDR for the Public Subnet in the first AZ.
+                      logger.info('Macro replication loop index: %d', i)
+
+                      # Override the CIDR for the Public Subnet of VPCPubSN1 in the first AZ.
                       if i == 1:   
-                        fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0] = i - 1
-                        logger.info('CIDR index event{}'.format(fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0]))
-                        logger.info('before CIDR event{}'.format(fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select']['Fn:Cidr']))
-                        fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select']['Fn:Cidr'][1] = subnetCIDRs
-                        fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select']['Fn:Cidr'][2] = subnetCIDRbits
-                        logger.info('after CIDR event{}'.format(fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select']['Fn:Cidr']))
                         fragment['Resources']['VPCPubSn' + str(i)]['Properties']['AvailabilityZone']['Fn::Select'][0] = str(i - 1)
-                        logger.info('AZ event{}'.format(fragment['Resources']['VPCPubSn' + str(i)]['Properties']['AvailabilityZone']['Fn::Select'][0]))
+                        fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0] = str(i - 1)
+                        fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][1]['Fn::Cidr'][1] = subnetCIDRs
+                        fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][1]['Fn::Cidr'][2] = subnetCIDRbits
+                        logger.info('PubSn' + str(i) + ' after AZ:    {}'.format(fragment['Resources']['VPCPubSn' + str(i)]['Properties']['AvailabilityZone']['Fn::Select'][0]))
+                        logger.info('PubSn' + str(i) + ' after CIDR index:  {}'.format(fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0]))
+                        logger.info('PubSn' + str(i) + ' after CIDR:  {}'.format(fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][1]))
                       # Append all the additional Public Subnets onto the fragment.
                       else:        
                         # Create new Public Subnet based off of VPCPubSN1
                         fragment['Resources']['VPCPubSn' + str(i)] = copy.deepcopy(VPCPubSn1)
-                        fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0] = i - 1
                         fragment['Resources']['VPCPubSn' + str(i)]['Properties']['AvailabilityZone']['Fn::Select'][0] = str(i - 1)
-                        logger.info('CIDR event{}'.format(fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0]))
-                        logger.info('AZ event{}'.format(fragment['Resources']['VPCPubSn' + str(i)]['Properties']['AvailabilityZone']['Fn::Select'][0]))
-                        # Name tag
-                        logger.info('Tags event{}'.format(fragment['Resources']['VPCPubSn1']['Properties']['Tags']))
-                        logger.info('Tags_sub_0 event{}'.format(fragment['Resources']['VPCPubSn1']['Properties']['Tags'][0]))
-                        logger.info('Tags_sub_0_value event{}'.format(fragment['Resources']['VPCPubSn1']['Properties']['Tags'][0]['Value']))
+                        fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0] = str(i - 1)
+                        fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][1]['Fn::Cidr'][1] = subnetCIDRs
+                        fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][1]['Fn::Cidr'][2] = subnetCIDRbits
+                        logger.info('PubSn' + str(i) + ' after AZ:     {}'.format(fragment['Resources']['VPCPubSn' + str(i)]['Properties']['AvailabilityZone']['Fn::Select'][0]))
+                        logger.info('PubSn' + str(i) + ' after CIDR: {}'.format(fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][1]))
+                        logger.info('PubSn' + str(i) + ' after CIDR:   {}'.format(fragment['Resources']['VPCPubSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][1]))
                         next_name = '${VPCName}_vpc_public_subnet_' + str(i)
-                        logger.info('New_value event{}'.format(next_name))
+                        logger.info('PubSn' + str(i) + ' New_value     {}'.format(next_name))
                         fragment['Resources']['VPCPubSn' + str(i)]['Properties']['Tags'][0]['Value']['Fn::Sub'] = next_name
 
-                      # Override the CIDR for the public subnet in the first AZ.
+                      # Override the CIDR for the Private Subnet of VPCPrivSN1 in the first AZ.
                       if i == 1:   
-                        fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0] = i - 1
-                        logger.info('CIDR index event{}'.format(fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0]))
-                        logger.info('before CIDR event{}'.format(fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select']['Fn:Cidr']))
-                        fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select']['Fn:Cidr'][1] = subnetCIDRs
-                        fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select']['Fn:Cidr'][2] = subnetCIDRbits
-                        logger.info('after CIDR event{}'.format(fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select']['Fn:Cidr']))
                         fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['AvailabilityZone']['Fn::Select'][0] = str(i - 1)
-                        logger.info('AZ event{}'.format(fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['AvailabilityZone']['Fn::Select'][0]))
+                        fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0] = (numAZs*2) - i
+                        fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][1]['Fn::Cidr'][1] = subnetCIDRs
+                        fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][1]['Fn::Cidr'][2] = subnetCIDRbits
+                        logger.info('PrivSn' + str(i) + ' after AZ:    {}'.format(fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['AvailabilityZone']['Fn::Select'][0]))
+                        logger.info('PrivSn' + str(i) + ' after CIDR index:  {}'.format(fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0]))
+                        logger.info('PrivSn' + str(i) + ' after CIDR:  {}'.format(fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][1]))
                       # Append all the additional Private Subnets onto the fragment.
                       else:        
                         # Create new Private Subnet based off of VPCPrivSN1
                         fragment['Resources']['VPCPrivSn' + str(i)] = copy.deepcopy(VPCPrivSn1)
-                        # Hard coding the VPC CIDR subnet split where private subnets start and work down from to 12 until intrinsic functions can nest 4 deep see the CF Template WBA_Create-Macro.yaml for details.
-                        # fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0] = len(AZs) + i - 1
-                        # fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0] = 12 - i
-                        fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0] = (numAZs*2) - i
                         fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['AvailabilityZone']['Fn::Select'][0] = str(i - 1)
-                        # Name tag
-                        logger.info('Tags event{}'.format(fragment['Resources']['VPCPrivSn1']['Properties']['Tags']))
-                        logger.info('Tags_sub_0 event{}'.format(fragment['Resources']['VPCPrivSn1']['Properties']['Tags'][0]))
-                        logger.info('Tags_sub_0_value event{}'.format(fragment['Resources']['VPCPrivSn1']['Properties']['Tags'][0]['Value']))
+                        fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0] = (numAZs*2) - i
+                        fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][1]['Fn::Cidr'][1] = subnetCIDRs
+                        fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][1]['Fn::Cidr'][2] = subnetCIDRbits
+                        logger.info('PrivSn' + str(i) + ' after AZ:    {}'.format(fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['AvailabilityZone']['Fn::Select'][0]))
+                        logger.info('PrivSn' + str(i) + ' after CIDR index:  {}'.format(fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][0]))
+                        logger.info('PrivSn' + str(i) + ' after CIDR:  {}'.format(fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['CidrBlock']['Fn::Select'][1]))
                         fragment['Resources']['VPCPrivSn' + str(i)]['Properties']['Tags'][0]['Value']['Fn::Sub'] = '${VPCName}_vpc_private_subnet_' + str(i)
 
-                        # Create Public RT Association
+                        # Append all the additional Outputs onto the fragment.
+                        # if not i == 1:   
+                        # Create new Outputs for Public RT Association
                         fragment['Resources']['VPCPubSn' + str(i) + 'RtAssoc'] = {}
                         fragment['Resources']['VPCPubSn' + str(i) + 'RtAssoc']['Type'] = 'AWS::EC2::SubnetRouteTableAssociation'
                         fragment['Resources']['VPCPubSn' + str(i) + 'RtAssoc']['Properties'] = {}
@@ -255,7 +263,7 @@ Resources:
                         fragment['Resources']['VPCPubSn' + str(i) + 'RtAssoc']['Properties']['SubnetId'] = {}
                         fragment['Resources']['VPCPubSn' + str(i) + 'RtAssoc']['Properties']['SubnetId']['Ref'] = 'VPCPubSn' + str(i)
 
-                        # Create Private RT Association
+                        # Create new Outputs for Private RT Association
                         fragment['Resources']['VPCPrivSn' + str(i) + 'RtAssoc'] = {}
                         fragment['Resources']['VPCPrivSn' + str(i) + 'RtAssoc']['Type'] = 'AWS::EC2::SubnetRouteTableAssociation'
                         fragment['Resources']['VPCPrivSn' + str(i) + 'RtAssoc']['Properties'] = {}
@@ -264,32 +272,76 @@ Resources:
                         fragment['Resources']['VPCPrivSn' + str(i) + 'RtAssoc']['Properties']['SubnetId'] = {}
                         fragment['Resources']['VPCPrivSn' + str(i) + 'RtAssoc']['Properties']['SubnetId']['Ref'] = 'VPCPrivSn' + str(i)
                         
-                        # NAT Gateway per public subnet
+                        # Create new Outputs for NAT Gateway per public subnet
+                        # not needed
                         
-                        # NAT Gateway EIP per NAT Gateway
-
-                        # Create new Outputs for public subnets
-                        logger.info('Outputs event{}'.format(fragment['Outputs']))
-                        fragment['Outputs']['StackVPCPubSn' + str(i)] = copy.deepcopy(StackVPCPubSn1)
-                        logger.info('Outputs event{}'.format(fragment['Outputs']))
+                        # Create new Outputs for NAT Gateway EIP per NAT Gateway
+                        # not needed
+                        
+                        # Create new Outputs for public subnet IDs
+                        fragment['Outputs']['StackVPCPubSn' + str(i)] = {}
                         fragment['Outputs']['StackVPCPubSn' + str(i)]['Description'] = 'The ID of the public subnet' + str(i)
-                        logger.info('Outputs event{}'.format(fragment['Outputs']['StackVPCPubSn' + str(i)]['Description']))
+                        fragment['Outputs']['StackVPCPubSn' + str(i)]['Value'] = {}
                         fragment['Outputs']['StackVPCPubSn' + str(i)]['Value']['Ref'] = 'VPCPubSn' + str(i)
-                        logger.info('Outputs event{}'.format(fragment['Outputs']['StackVPCPubSn' + str(i)]['Value']))
+                        fragment['Outputs']['StackVPCPubSn' + str(i)]['Export'] = {}
+                        fragment['Outputs']['StackVPCPubSn' + str(i)]['Export']['Name'] = {}
                         fragment['Outputs']['StackVPCPubSn' + str(i)]['Export']['Name']['Fn::Sub'] = '${VPCName}-PublicSubnet' + str(i) + '-ID'
-                        logger.info('Outputs event{}'.format(fragment['Outputs']['StackVPCPubSn' + str(i)]['Export']['Name']))
+                        logger.info('PubSn' + str(i) + ' after create Outputs: {}'.format(fragment['Outputs']))
 
-                        # Create new Outputs for private subnets
-                        logger.info('Outputs event{}'.format(fragment['Outputs']))
-                        fragment['Outputs']['StackVPCPrivSn' + str(i)] = copy.deepcopy(StackVPCPrivSn1)
-                        logger.info('Outputs event{}'.format(fragment['Outputs']))
+                        # Create new Outputs for public subnet CIDRs
+                        fragment['Outputs']['StackVPCPubSn' + str(i) + 'CIDR'] = {}
+                        fragment['Outputs']['StackVPCPubSn' + str(i) + 'CIDR']['Description'] = 'The CIDR of the public subnet' + str(i)
+                        fragment['Outputs']['StackVPCPubSn' + str(i) + 'CIDR']['Value'] = {}
+                        fragment['Outputs']['StackVPCPubSn' + str(i) + 'CIDR']['Value']['Fn::GetAtt'] = 'VPCPubSn' + str(i) + '.CidrBlock'
+                        fragment['Outputs']['StackVPCPubSn' + str(i) + 'CIDR']['Export'] = {}
+                        fragment['Outputs']['StackVPCPubSn' + str(i) + 'CIDR']['Export']['Name'] = {}
+                        fragment['Outputs']['StackVPCPubSn' + str(i) + 'CIDR']['Export']['Name']['Fn::Sub'] = '${VPCName}-PublicSubnet' + str(i) + '-CIDR'
+                        logger.info('PubSnCIDR' + str(i) + ' after create Outputs: {}'.format(fragment['Outputs']))
+
+                        # Create new Outputs for public subnet Route Tables
+                        fragment['Outputs']['StackVPCPubSn' + str(i) + 'RT'] = {}
+                        fragment['Outputs']['StackVPCPubSn' + str(i) + 'RT']['Description'] = 'The Route Table of the public subnet' + str(i)
+                        fragment['Outputs']['StackVPCPubSn' + str(i) + 'RT']['Value'] = {}
+                        fragment['Outputs']['StackVPCPubSn' + str(i) + 'RT']['Value']['Ref'] = 'VPCPubSn' + str(i)
+                        fragment['Outputs']['StackVPCPubSn' + str(i) + 'RT']['Export'] = {}
+                        fragment['Outputs']['StackVPCPubSn' + str(i) + 'RT']['Export']['Name'] = {}
+                        fragment['Outputs']['StackVPCPubSn' + str(i) + 'RT']['Export']['Name']['Fn::Sub'] = '${VPCName}-PublicSubnet' + str(i) + '-RouteTable'
+                        logger.info('PubSnRt' + str(i) + ' after create Outputs: {}'.format(fragment['Outputs']))
+
+                        # Create new Outputs for private subnet IDs
+                        fragment['Outputs']['StackVPCPrivSn' + str(i)] = {}
                         fragment['Outputs']['StackVPCPrivSn' + str(i)]['Description'] = 'The ID of the private subnet' + str(i)
-                        logger.info('Outputs event{}'.format(fragment['Outputs']['StackVPCPrivSn' + str(i)]['Description']))
+                        fragment['Outputs']['StackVPCPrivSn' + str(i)]['Value'] = {}
                         fragment['Outputs']['StackVPCPrivSn' + str(i)]['Value']['Ref'] = 'VPCPrivSn' + str(i)
-                        logger.info('Outputs event{}'.format(fragment['Outputs']['StackVPCPrivSn' + str(i)]['Value']))
+                        fragment['Outputs']['StackVPCPrivSn' + str(i)]['Export'] = {}
+                        fragment['Outputs']['StackVPCPrivSn' + str(i)]['Export']['Name'] = {}
                         fragment['Outputs']['StackVPCPrivSn' + str(i)]['Export']['Name']['Fn::Sub'] = '${VPCName}-PrivateSubnet' + str(i) + '-ID'
-                        logger.info('Outputs event{}'.format(fragment['Outputs']['StackVPCPrivSn' + str(i)]['Export']['Name']))
+                        logger.info('PrivSn' + str(i) + ' after create Outputs: {}'.format(fragment['Outputs']))
 
+                        # Create new Outputs for private subnet CIDRs
+                        fragment['Outputs']['StackVPCPrivSn' + str(i) + 'CIDR'] = {}
+                        fragment['Outputs']['StackVPCPrivSn' + str(i) + 'CIDR']['Description'] = 'The CIDR of the private subnet' + str(i)
+                        fragment['Outputs']['StackVPCPrivSn' + str(i) + 'CIDR']['Value'] = {}
+                        fragment['Outputs']['StackVPCPrivSn' + str(i) + 'CIDR']['Value']['Fn::GetAtt'] = 'VPCPrivSn' + str(i) + '.CidrBlock'
+                        fragment['Outputs']['StackVPCPrivSn' + str(i) + 'CIDR']['Export'] = {}
+                        fragment['Outputs']['StackVPCPrivSn' + str(i) + 'CIDR']['Export']['Name'] = {}
+                        fragment['Outputs']['StackVPCPrivSn' + str(i) + 'CIDR']['Export']['Name']['Fn::Sub'] = '${VPCName}-PrivateSubnet' + str(i) + '-CIDR'
+                        logger.info('PrivSnCIDR' + str(i) + ' after create Outputs: {}'.format(fragment['Outputs']))
+
+                        # Create new Outputs for private subnet Route Tables
+                        fragment['Outputs']['StackVPCPrivSn' + str(i) + 'RT'] = {}
+                        fragment['Outputs']['StackVPCPrivSn' + str(i) + 'RT']['Description'] = 'The Route Table of the private subnet' + str(i)
+                        fragment['Outputs']['StackVPCPrivSn' + str(i) + 'RT']['Value'] = {}
+                        fragment['Outputs']['StackVPCPrivSn' + str(i) + 'RT']['Value']['Ref'] = 'VPCPrivSn' + str(i)
+                        fragment['Outputs']['StackVPCPrivSn' + str(i) + 'RT']['Export'] = {}
+                        fragment['Outputs']['StackVPCPrivSn' + str(i) + 'RT']['Export']['Name'] = {}
+                        fragment['Outputs']['StackVPCPrivSn' + str(i) + 'RT']['Export']['Name']['Fn::Sub'] = '${VPCName}-PrivateSubnet' + str(i) + '-RouteTable'
+                        logger.info('PubSnRt' + str(i) + ' after create Outputs: {}'.format(fragment['Outputs']))
+
+                    # Function Inputs
+                    logger.info('Output Event: event{}'.format(event))
+                     
+                    # Return from the function
                     r = {}
                     r['requestId'] = requestId
                     r['status'] = 'SUCCESS'
@@ -300,6 +352,7 @@ Resources:
             Handler: index.handler
             Runtime: python3.9
             Timeout: '60'
+            MemorySize: '256'
             Role: !GetAtt TransformExecutionRole.Arn
             Tags:
                 - Key: Name

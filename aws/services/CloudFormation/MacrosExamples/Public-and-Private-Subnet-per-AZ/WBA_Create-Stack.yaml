@@ -7,7 +7,9 @@ Metadata:
           default: VPC Properties
         Parameters:
           - VPCName
-          - VPCCidrBlock
+#          - VPCCidrBlock
+          - IPAMPoolId
+          - VPCNetMaskLength
           - MaxAZs
           - CorpAllocatedCIDR
       - Label:
@@ -33,14 +35,31 @@ Parameters:
     Type: String
     Description: Name for the VPC used to indicate what app, system, or other purpose the VPC is used for. "-vpc" will be appended to this name.
     Default: Creator_was_too_lazy_to_provide_a_name
-  VPCCidrBlock:
+#  VPCCidrBlock:
+#    Type: String
+#    Description: 'The CIDR block for the VPC in the range /27 - /16 to allow for 1 private and 1 public subnets per AZ (Max AZ/region is currently 6 in us-east-1). (Format Example: 10.0.0.0/16) Subnet CIDRs will be 4 bits smaller than the VPC CIDR.'
+#    MinLength: '9'
+#    MaxLength: '18'
+#    Default: 10.0.0.0/16
+#    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(27|26|25|24|23|22|21|20|19|18|17|16)\b'
+#    ConstraintDescription: Must be a valid IP CIDR block in the range /27 - /16 to allow for 2 subnets per AZ (Max AZ/region is 8). 
+  IPAMPoolId:
     Type: String
-    Description: 'The CIDR block for the VPC in the range /27 - /16 to allow for 1 private and 1 public subnets per AZ (Max AZ/region is currently 6 in us-east-1). (Format Example: 10.0.0.0/16) Subnet CIDRs will be 4 bits smaller than the VPC CIDR.'
-    MinLength: '9'
-    MaxLength: '18'
-    Default: 10.0.0.0/16
-    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(27|26|25|24|23|22|21|20|19|18|17|16)\b'
-    ConstraintDescription: Must be a valid IP CIDR block in the range /27 - /16 to allow for 2 subnets per AZ (Max AZ/region is 8). 
+    Description: 'The VPC IPAM Pool to sub-allocate this VPC CIDR from.  Note the base address of the CIDR is decided by IPAM.'
+    MinLength: '27'
+    MaxLength: '27'
+    Default: ipam-pool-0b13b54c41a6f9723
+#    AllowedPattern: 'ipam-pool-/[0-9a-f]+/i'
+    AllowedPattern: '^(?:ipam-pool-([a-z0-9]){17})'
+    ConstraintDescription: Must be an existing IPAM Pool id in the AWS account the VPC is being created in. The default is the /19 WM approved CIDR allocated to WBA.
+  VPCNetMaskLength:
+    Type: String
+    Description: 'The net mask length of the CIDR block for the VPC in the range /27 - /16 to allow for 1 private and 1 public subnets per AZ (Max AZ/region is currently 6 in us-east-1). (Format Example: 10.0.0.0/16) Subnet CIDRs will be 4 bits smaller than the VPC CIDR.'
+    MinLength: '2'
+    MaxLength: '2'
+    Default: 24
+    AllowedPattern: '(27|26|25|24|23|22|21|20|19|18|17|16)'
+    ConstraintDescription: Must be a valid IP CIDR block size in the range /27 - /16 to allow for 2 subnets per AZ (Max AZ/region is 8). 
   MaxAZs:
     Type: String
 #    Type: Number
@@ -58,7 +77,7 @@ Parameters:
     AllowedValues:
       - true
       - false
-    Default: false    
+    Default: true    
   OwnerTag:
     Type: String
     Description: Value for the "Owner" tag of resources created by the stack used to indicate who owns the stack.
@@ -127,7 +146,9 @@ Resources:
   VPC:
     Type: 'AWS::EC2::VPC'
     Properties:
-      CidrBlock: !Ref VPCCidrBlock
+#      CidrBlock: !Ref VPCCidrBlock
+      Ipv4IpamPoolId: !Ref IPAMPoolId
+      Ipv4NetmaskLength: !Ref VPCNetMaskLength
       InstanceTenancy: default
       EnableDnsSupport: true
       EnableDnsHostnames: true
@@ -165,7 +186,8 @@ Resources:
 #      !If [!Equals [!Ref MaxAZs, '0'], 12, !Ref MaxAZs]
 #      CidrBlock: !Select [0, !Cidr [!GetAtt 'VPC.CidrBlock', 4, 4]]
       # Reusing the VPC CIDR here looks wrong, but CF transform named CreateSubnetsPerAZ will override with the correct CIDR after it calculates it. 
-      CidrBlock: !Ref VPCCidrBlock
+#      CidrBlock: !Ref VPCCidrBlock
+      CidrBlock: !Select [0, !Cidr [!GetAtt 'VPC.CidrBlock', 4, 4]]
       AvailabilityZone: !Select
         - '0'
         - !GetAZs
@@ -214,7 +236,8 @@ Resources:
 #      CidrBlock: !Select [!Length [!GetAZs [!Ref 'AWS::Region']], !Cidr [!GetAtt 'VPC.CidrBlock', 256, 8]]
 #      CidrBlock: !Select [3, !Cidr [!GetAtt 'VPC.CidrBlock', 4, 4]]
       # Reusing the VPC CIDR here looks wrong, but CF transform named CreateSubnetsPerAZ will override with the correct CIDR after it calculates it. 
-      CidrBlock: !Ref VPCCidrBlock
+#      CidrBlock: !Ref VPCCidrBlock
+      CidrBlock: !Select [0, !Cidr [!GetAtt 'VPC.CidrBlock', 4, 4]]
       AvailabilityZone: !Select
         - '0'
         - !GetAZs
@@ -359,7 +382,8 @@ Resources:
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: '-1'
-          CidrIp: !Ref VPCCidrBlock
+#          CidrIp: !Ref VPCCidrBlock
+          CidrIp: !GetAtt 'VPC.CidrBlock'
           Description: All Traffic from VPC CIDR
       Tags:
         - Key: Name
@@ -431,26 +455,54 @@ Resources:
           Value: !Ref TeamTag
 
 Transform:
-# AWS::LanguageExtensions is only needed for the Length function.
-#  - 'AWS::LanguageExtensions'
+  # AWS::LanguageExtensions is only needed for the Length function.
+  #  - 'AWS::LanguageExtensions'
   - CreateSubnetsPerAZ
   
 Outputs:
+
   StackVPC:
     Description: The ID of the VPC
     Value: !Ref VPC
     Export:
       Name: !Sub "${VPCName}-VPC-ID"
+
   StackVPCPubSn1:
     Description: The ID of the public subnet1
     Value: !Ref VPCPubSn1
     Export:
       Name: !Sub "${VPCName}-PublicSubnet1-ID"
+
+  StackVPCPubSn1CIDR:
+    Description: The CIDR of the public subnet1
+    Value: !GetAtt VPCPubSn1.CidrBlock
+    Export:
+      Name: !Sub "${VPCName}-PublicSubnet1-CIDR"
+
+  StackVPCPubSn1RT:
+    Description: The Route Table of the public subnet1
+    Value: !Ref VPCPubRt1
+    Export:
+      Name: !Sub "${VPCName}-PublicSubnet1-RouteTable"
+
   StackVPCPrivSn1:
     Description: The ID of the private subnet1
     Value: !Ref VPCPrivSn1
     Export:
       Name: !Sub "${VPCName}-PrivateSubnet1-ID"
+
+  StackVPCPrivSn1CIDR:
+    Description: The CIDR of the private subnet1
+    Value: !GetAtt VPCPrivSn1.CidrBlock
+    Export:
+      Name: !Sub "${VPCName}-PrivateSubnet1-CIDR"
+
+  StackVPCPrivSn1RT:
+    Description: The Route Table of the private subnet1
+    Value: !Ref VPCPrivRt1
+    Export:
+      Name: !Sub "${VPCName}-PrivateSubnet1-RouteTable"
+
   StackSGAllTrafficFromVPC:
     Description: The ID of the Security Group that allows instance in the VPC to talk to each other
     Value: !Ref SGAllTrafficFromVPC
